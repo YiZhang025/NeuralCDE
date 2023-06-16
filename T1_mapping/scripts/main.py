@@ -15,6 +15,7 @@ from model import *
 from data import *
 import argparse
 import random
+from torch.nn import Sigmoid as Sigmoid
 
 #reproducibility
 torch.manual_seed(1998)
@@ -35,27 +36,36 @@ def train(model, train_dataloader, optimizer, loss_func, epoch, PINN = True, arg
 
         optimizer.zero_grad()
         pred_y = model(batch_coeffs).squeeze(-1)
+        # rescale pred_y to the original scale by sigmoid and range
+        pred_y_rescale = torch.zeros_like(pred_y)
+        
+        # in output, use Sigmoid to make sure the output is in the desired range, which is important for 
+        pred_y_rescale[:,0] = (args.C_range[1]- args.C_range[0])*Sigmoid(pred_y[:,0])+args.C_range[0]
+        pred_y_rescale[:,1] = (args.k_range[1]- args.k_range[0])*Sigmoid(pred_y[:,1])+args.k_range[0]
+        pred_y_rescale[:,2] = (args.T1_star_range[1]- args.T1_star_range[0])*Sigmoid(pred_y[:,2])+args.T1_star_range[0]
 
+        print(pred_y[0])
         # we instead use a linspace fit loss for the whole curve
         
-        loss_PINN = 0
-        if epoch > 2:
-            if PINN:
-                    loss_PINN = loss_func(pred_y*(torch.Tensor([100,1,1000]).cuda()), batch_y*(torch.Tensor([100,1,1000]).cuda()),torch.linspace(0,4000,30).cuda())
-                    #print(loss_PINN)
-                    wandb.log({"step_loss_PINN": loss_PINN})
-                    
-            else:
-                loss_PINN = 0
-        loss_T1_star = nn.functional.l1_loss(pred_y[:,2], batch_y[:,2])
-        loss_C = nn.functional.l1_loss(pred_y[:,0], batch_y[:,0])
-        loss_k = nn.functional.l1_loss(pred_y[:,1], batch_y[:,1])
+        #loss_PINN = 0
+    
+        if PINN:
+                loss_PINN = loss_func(pred_y*(torch.Tensor([100,1,1000]).cuda()), batch_y*(torch.Tensor([100,1,1000]).cuda()),torch.linspace(0,4000,30).cuda())
+                #print(loss_PINN)
+                wandb.log({"step_loss_PINN": loss_PINN})
+                
+        else:
+            loss_PINN = 0
         
+        loss_C = nn.functional.l1_loss(pred_y_rescale[:,0], batch_y[:,0])
+        loss_k = nn.functional.l1_loss(pred_y_rescale[:,1], batch_y[:,1])
+        loss_T1_star = nn.functional.l1_loss(pred_y_rescale[:,2], batch_y[:,2])
+
         wandb.log({"step_loss_T1_star": loss_T1_star})
         wandb.log({"step_loss_C": loss_C})
         wandb.log({"step_loss_k": loss_k})
 
-        loss_MAE = loss_T1_star + 10*loss_C + 1000*loss_k
+        loss_MAE = loss_T1_star# + loss_C + loss_k
         wandb.log({"step_loss_MAE": loss_MAE})
         loss = loss_MAE + 0.5*loss_PINN
         wandb.log({"step_loss": loss})
@@ -302,6 +312,11 @@ def main():
     parser.add_argument("--input_channels", default=2, type=int, help="Number of input channels.")
     parser.add_argument("--hidden_channels", default=8, type=int, help="Number of hidden channels.")
     parser.add_argument("--output_channels", default=3, type=int, help="Number of output channels.")
+
+    # data rescale parameters - flooring and ceiling via sigmoid
+    parser.add_argument('--c_range', default = [10.,600.], type=list, help="Range of C.")
+    parser.add_argument('--k_range', default = [1.2,5.], type=list, help="Range of k.")
+    parser.add_argument('--T1_star_range', default = [50.,3000.], type=list, help="Range of T1_star.")
 
     # Give arguments
     args = parser.parse_args()
